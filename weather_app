@@ -1,0 +1,131 @@
+import requests
+from datetime import datetime
+import time
+from pathlib import Path
+import json
+
+API_KEY = "f8a559765b3c778b654acfd85645d644"  
+BASE_URL = "https://api.openweathermap.org/data/2.5"
+CACHE_DIR = Path("weather_cache")
+CACHE_DIR.mkdir(exist_ok=True)
+CACHE_DURATION = 600  
+
+def get_emoji(description: str) -> str:
+    desc = description.lower()
+    if "rain" in desc: return "🌧️"
+    if "cloud" in desc: return "☁️"
+    if "clear" in desc: return "☀️"
+    if "snow" in desc: return "❄️"
+    return "⛅"
+
+def wind_dir(degrees: int) -> str:
+    dirs = ["N","NE","E","SE","S","SW","W","NW"]
+    return dirs[int((degrees + 22.5)//45) % 8]
+
+def read_cache(name: str):
+    file = CACHE_DIR / f"{name}.json"
+    if file.exists():
+        if time.time() - file.stat().st_mtime < CACHE_DURATION:
+            try:
+                with open(file, 'r') as f:
+                    return json.load(f)
+            except:
+                return None
+    return None
+
+def write_cache(name: str, data):
+    file = CACHE_DIR / f"{name}.json"
+    try:
+        with open(file, 'w') as f:
+            json.dump(data, f, indent=2)
+    except:
+        pass
+
+def fetch_data(endpoint: str, city: str):
+    cache_name = f"{endpoint}_{city}"
+    cached = read_cache(cache_name)
+    if cached:
+        return cached, True
+    try:
+        response = requests.get(f"{BASE_URL}/{endpoint}", params={"q": city, "appid": API_KEY, "units": "metric"}, timeout=10)
+        data = response.json()
+        if response.status_code == 200:
+            write_cache(cache_name, data)
+            return data, False
+        else:
+            print("API error:", data.get("message", "Unknown error"))
+    except requests.RequestException as e:
+        print("Network error:", e)
+    return None, False
+
+def display_dashboard(city: str):
+    weather, cached_weather = fetch_data("weather", city)
+    forecast_data, cached_forecast = fetch_data("forecast", city)
+
+    if not weather or not forecast_data:
+        print("Unable to retrieve data.")
+        return
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print("\n🌤️  WEATHER DASHBOARD")
+    print("="*30)
+    print(f"\n📍 Current Location: {weather['name']}, {weather['sys']['country']}")
+    print(f"🕐 Last Updated: {now}\n")
+
+    main = weather.get("main", {})
+    wind = weather.get("wind", {})
+    sys = weather.get("sys", {})
+    desc = weather.get("weather", [{}])[0].get("description", "N/A")
+
+    print("Current Weather:")
+    print("─"*30)
+    print(f"Temperature:   {round(main.get('temp',0))}°C (Feels like: {round(main.get('feels_like',0))}°C)")
+    print(f"Conditions:    {desc.title()} {get_emoji(desc)}")
+    print(f"Humidity:      {main.get('humidity',0)}%")
+    print(f"Wind:          {round(wind.get('speed',0)*3.6)} km/h from {wind_dir(wind.get('deg',0))}")
+    print(f"Pressure:      {main.get('pressure',0)} hPa")
+    print(f"Visibility:    {round(weather.get('visibility',0)/1000)} km")
+    print(f"Sunrise:       {datetime.fromtimestamp(sys.get('sunrise',0)).strftime('%H:%M')}")
+    print(f"Sunset:        {datetime.fromtimestamp(sys.get('sunset',0)).strftime('%H:%M')}\n")
+
+    print("5-Day Forecast:")
+    print("─"*30)
+    
+    daily = {}
+    for item in forecast_data.get("list", []):
+        date = item["dt_txt"].split()[0]
+        daily.setdefault(date, []).append(item)
+
+    for i, date in enumerate(daily):
+        temps = [x["main"]["temp"] for x in daily[date]]
+        hums = [x["main"]["humidity"] for x in daily[date]]
+        desc = daily[date][0]["weather"][0]["description"]
+        day = datetime.strptime(date, "%Y-%m-%d").strftime("%a %d %b")
+        print(f"{day}: {get_emoji(desc)}   {round(max(temps))}°C / {round(min(temps))}°C  (Humidity: {round(sum(hums)/len(hums))}%)")
+        if i==4: break
+
+    print(f"\nAPI Status: {'Using cached data' if cached_weather or cached_forecast else 'Live data'}")
+    print("Type 'refresh' to update, 'search' for new city, or 'quit' to exit:")
+
+def main():
+    city = "Hyderabad"
+    while True:
+        display_dashboard(city)
+        cmd = input("> ").strip().lower()
+        if cmd == "refresh":
+            for f in CACHE_DIR.glob("*.json"):
+                f.unlink()
+        elif cmd == "search":
+            new_city = input("Enter city name: ").strip()
+            if new_city:
+                city = new_city
+        elif cmd == "quit":
+            break
+        else:
+            print("Unknown command. Use: refresh, search, quit.")
+
+if __name__ == "__main__":
+    if not API_KEY:
+        print("Please set your API key in the script.")
+    else:
+        main()
